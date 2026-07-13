@@ -1,0 +1,1064 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>LLM 参数规模 vs 发布时间线 · Hugging Face</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1117;
+    --panel: #171a24;
+    --text: #e6e8ef;
+    --muted: #9aa0b4;
+    --accent: #ff9d00;
+    --accent2: #4dd0e1;
+    --border: #2a2d3a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+  }
+  header {
+    padding: 20px 28px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  h1 { margin: 0 0 6px; font-size: 22px; }
+  header p { margin: 0; color: var(--muted); font-size: 13px; }
+  #status {
+    display: inline-block;
+    margin-top: 10px;
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    background: #24314a;
+    color: var(--accent2);
+  }
+  #status.error { background: #3a2323; color: #ff8686; }
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 12px 28px;
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  .toolbar label { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  select, button {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  button:hover, select:hover { border-color: var(--accent2); }
+  #chartWrap {
+    position: relative;
+    margin: 16px 28px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    height: 620px;
+  }
+  #legendNote {
+    padding: 0 28px 8px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+  #legendNote span.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+  table {
+    width: calc(100% - 56px);
+    margin: 8px 28px 28px;
+    border-collapse: collapse;
+    font-size: 12.5px;
+  }
+  th, td {
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+    padding: 6px 8px;
+    color: var(--text);
+  }
+  th { color: var(--muted); font-weight: 500; cursor: pointer; user-select: none; }
+  tr:hover td { background: #1c2030; }
+  a { color: var(--accent2); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  #loadingBar {
+    height: 2px;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    width: 0%;
+    transition: width .3s;
+  }
+  /* 作者模型列表弹窗 */
+  #authorModal {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,.6);
+    z-index: 100;
+  }
+  #authorModal.open { display: flex; align-items: center; justify-content: center; }
+  #authorModalBox {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    width: min(1000px, 92vw);
+    max-height: 84vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  #authorModalHead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 18px;
+    border-bottom: 1px solid var(--border);
+  }
+  #authorModalHead h2 { margin: 0; font-size: 15px; }
+  #authorModalClose {
+    background: none;
+    border: none;
+    color: var(--muted);
+    font-size: 20px;
+    cursor: pointer;
+    padding: 2px 8px;
+  }
+  #authorModalClose:hover { color: var(--text); }
+  #authorModalBody { overflow: auto; padding: 0 18px 14px; }
+  #authorModalBody table { width: 100%; margin: 0; }
+  #authorModalBody thead th {
+    position: sticky;
+    top: 0;
+    background: var(--panel);
+    z-index: 1;
+  }
+  #authorModalBody th.sorted { color: var(--accent2); }
+</style>
+</head>
+<body>
+
+<div id="loadingBar"></div>
+<header>
+  <h1>LLM 参数规模随发布时间的演化</h1>
+  <p>横轴：模型发布 / 上线时间　纵轴（对数）：参数量（Billion）　数据来源：Hugging Face Hub API（每次打开页面实时拉取）</p>
+  <div id="status">正在连接 Hugging Face API...</div>
+</header>
+
+<div class="toolbar">
+  <label>任务：
+    <select id="liveTag">
+      <option value="text-generation">text-generation</option>
+      <option value="text2text-generation">text2text-generation</option>
+      <option value="">全部任务</option>
+    </select>
+  </label>
+  <label>排序：
+    <select id="liveSort">
+      <option value="trendingScore" selected>trending</option>
+      <option value="likes">likes</option>
+      <option value="downloads">downloads</option>
+      <option value="createdAt">最新发布</option>
+    </select>
+  </label>
+  <label>数量：
+    <select id="liveLimit">
+      <option value="30">30</option>
+      <option value="60">60</option>
+      <option value="100" selected>100</option>
+      <option value="200">200</option>
+    </select>
+  </label>
+  <label><input type="checkbox" id="providerOnly" checked> 仅限有 Inference Provider 部署的模型</label>
+  <button id="refreshBtn">🔄 重新拉取最新数据</button>
+  <label><input type="checkbox" id="toggleCurated" checked> 显示里程碑模型</label>
+  <label><input type="checkbox" id="toggleLive" checked> 显示实时热门模型</label>
+</div>
+
+<div id="chartWrap"><canvas id="chart"></canvas></div>
+<div id="legendNote">
+  <span class="dot" style="background:#ff9d00"></span>里程碑模型（人工整理，发布日期/参数量基本准确）　
+  <span class="dot" style="background:#4dd0e1"></span>Hugging Face 当前热门模型（参数量优先取 safetensors 精确值，否则从模型名解析，实时抓取）
+</div>
+
+<header style="border-top:1px solid var(--border)">
+  <h1 style="font-size:18px">按作者（组织）查看：发布时间 vs 参数量</h1>
+  <p>选择或输入 HF 上的组织名（如 google、meta-llama、Qwen），支持英文逗号分隔多个作者对比。数据实时拉取。</p>
+  <div id="authorStatus" style="display:inline-block;margin-top:10px;padding:4px 10px;border-radius:12px;font-size:12px;background:#24314a;color:var(--accent2)">选择作者后自动加载</div>
+</header>
+
+<div class="toolbar">
+  <label>作者：
+    <select id="authorSelect">
+      <option value="google" selected>google</option>
+      <option value="meta-llama">meta-llama</option>
+      <option value="mistralai">mistralai</option>
+      <option value="Qwen">Qwen</option>
+      <option value="deepseek-ai">deepseek-ai</option>
+      <option value="microsoft">microsoft</option>
+      <option value="openai">openai</option>
+      <option value="nvidia">nvidia</option>
+      <option value="zai-org">zai-org (GLM)</option>
+      <option value="moonshotai">moonshotai (Kimi)</option>
+      <option value="MiniMaxAI">MiniMaxAI</option>
+      <option value="CohereLabs">CohereLabs</option>
+      <option value="allenai">allenai</option>
+      <option value="ibm-granite">ibm-granite</option>
+      <option value="tiiuae">tiiuae (Falcon)</option>
+      <option value="stabilityai">stabilityai</option>
+      <option value="apple">apple</option>
+    </select>
+  </label>
+  <label>搜索任意作者（输入自动联想，可逗号分隔多个对比）：
+    <input type="text" id="authorInput" list="authorSuggest" placeholder="输入即搜索 HF 组织/用户，如 goog..."
+      style="background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-size:13px;width:280px" />
+    <datalist id="authorSuggest"></datalist>
+  </label>
+  <label>每作者数量：
+    <select id="authorLimit">
+      <option value="50">Top 50</option>
+      <option value="100">Top 100</option>
+      <option value="200">Top 200</option>
+      <option value="all" selected>全部（自动翻页）</option>
+    </select>
+  </label>
+  <button id="authorLoadBtn">🔍 加载作者模型</button>
+  <button id="authorIndexBtn" title="扫描 HF 模型库，把遇到的作者全部存入本地索引，越用越全">🌐 构建作者索引</button>
+  <span id="authorIndexInfo" style="font-size:12px;color:var(--muted)"></span>
+  <label>Tasks（拉取完成后可用，据响应动态生成）：
+    <select id="authorTaskFilter" disabled>
+      <option value="">全部任务</option>
+    </select>
+  </label>
+  <button id="authorTableBtn" disabled>📋 查看完整列表</button>
+</div>
+
+<div id="authorChartWrap" style="position:relative;margin:16px 28px;background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px;height:560px">
+  <canvas id="authorChart"></canvas>
+</div>
+<div class="legendNote" style="padding:0 28px 8px;color:var(--muted);font-size:12px">提示：点击散点可打开对应模型主页；参数量优先取 safetensors 精确值，无法获取时从模型名解析，两者都没有的模型会被过滤。</div>
+
+<div id="authorModal">
+  <div id="authorModalBox">
+    <div id="authorModalHead">
+      <h2 id="authorModalTitle">作者模型列表</h2>
+      <button id="authorModalClose" title="关闭">✕</button>
+    </div>
+    <div id="authorModalBody">
+      <table id="authorTable">
+        <thead>
+          <tr>
+            <th data-sort="name">模型</th>
+            <th data-sort="author">作者</th>
+            <th data-sort="date">发布时间 ⇅</th>
+            <th data-sort="task">任务</th>
+            <th data-sort="params">参数量 (B)</th>
+            <th data-sort="exact">参数来源</th>
+            <th data-sort="likes">Likes</th>
+            <th data-sort="downloads">Downloads</th>
+            <th>链接</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<table id="dataTable">
+  <thead>
+    <tr>
+      <th data-key="name">模型</th>
+      <th data-key="date">日期</th>
+      <th data-key="params">参数量 (B)</th>
+      <th data-key="exact">参数来源</th>
+      <th data-key="likes">Likes</th>
+      <th data-key="downloads">Downloads</th>
+      <th data-key="type">类型</th>
+      <th>链接</th>
+    </tr>
+  </thead>
+  <tbody></tbody>
+</table>
+
+<script>
+// ---------------------------------------------------------------
+// 1. 人工整理的里程碑模型数据集（发布时间 + 参数量相对可靠）
+// ---------------------------------------------------------------
+const CURATED = [
+  { name: "GPT-2",              date: "2019-02-14", params: 1.5,   id: "openai-community/gpt2-xl" },
+  { name: "GPT-J-6B",           date: "2021-06-04", params: 6,     id: "EleutherAI/gpt-j-6b" },
+  { name: "GPT-NeoX-20B",       date: "2022-04-14", params: 20,    id: "EleutherAI/gpt-neox-20b" },
+  { name: "OPT-66B",            date: "2022-05-03", params: 66,    id: "facebook/opt-66b" },
+  { name: "BLOOM-176B",         date: "2022-07-11", params: 176,   id: "bigscience/bloom" },
+  { name: "GLM-130B",           date: "2022-08-04", params: 130,   id: "THUDM/glm-130b" },
+  { name: "LLaMA-65B",          date: "2023-02-24", params: 65,    id: "huggyllama/llama-65b" },
+  { name: "Falcon-40B",         date: "2023-05-25", params: 40,    id: "tiiuae/falcon-40b" },
+  { name: "Llama-2-70B",        date: "2023-07-18", params: 70,    id: "meta-llama/Llama-2-70b-hf" },
+  { name: "Falcon-180B",        date: "2023-09-06", params: 180,   id: "tiiuae/falcon-180B" },
+  { name: "Mistral-7B",         date: "2023-09-27", params: 7,     id: "mistralai/Mistral-7B-v0.1" },
+  { name: "Qwen-72B",           date: "2023-11-30", params: 72,    id: "Qwen/Qwen-72B" },
+  { name: "Yi-34B",             date: "2023-11-06", params: 34,    id: "01-ai/Yi-34B" },
+  { name: "Mixtral-8x7B",       date: "2023-12-11", params: 46.7,  id: "mistralai/Mixtral-8x7B-v0.1" },
+  { name: "DeepSeek-V2",        date: "2024-05-06", params: 236,   id: "deepseek-ai/DeepSeek-V2" },
+  { name: "Llama-3-70B",        date: "2024-04-18", params: 70,    id: "meta-llama/Meta-Llama-3-70B" },
+  { name: "Llama-3-8B",         date: "2024-04-18", params: 8,     id: "meta-llama/Meta-Llama-3-8B" },
+  { name: "Mixtral-8x22B",      date: "2024-04-10", params: 141,   id: "mistralai/Mixtral-8x22B-v0.1" },
+  { name: "Command R+",         date: "2024-04-04", params: 104,   id: "CohereForAI/c4ai-command-r-plus" },
+  { name: "Qwen2-72B",          date: "2024-06-06", params: 72,    id: "Qwen/Qwen2-72B" },
+  { name: "Gemma-2-27B",        date: "2024-06-27", params: 27,    id: "google/gemma-2-27b" },
+  { name: "Llama-3.1-405B",     date: "2024-07-23", params: 405,   id: "meta-llama/Meta-Llama-3.1-405B" },
+  { name: "Qwen2.5-72B",        date: "2024-09-19", params: 72,    id: "Qwen/Qwen2.5-72B" },
+  { name: "Llama-3.3-70B",      date: "2024-12-06", params: 70,    id: "meta-llama/Llama-3.3-70B-Instruct" },
+  { name: "DeepSeek-V3",        date: "2024-12-26", params: 671,   id: "deepseek-ai/DeepSeek-V3" },
+  { name: "DeepSeek-R1",        date: "2025-01-20", params: 671,   id: "deepseek-ai/DeepSeek-R1" },
+  { name: "Qwen3-235B-A22B",    date: "2025-04-29", params: 235,   id: "Qwen/Qwen3-235B-A22B" },
+  { name: "Llama-4-Maverick",   date: "2025-04-05", params: 400,   id: "meta-llama/Llama-4-Maverick-17B-128E-Instruct" },
+];
+
+// ---------------------------------------------------------------
+// 2. 工具函数
+// ---------------------------------------------------------------
+function parseParamsFromName(id) {
+  const name = id.toLowerCase();
+  let m = name.match(/(\d+(\.\d+)?)\s*x\s*(\d+(\.\d+)?)\s*b/); // e.g. 8x7b
+  if (m) return parseFloat(m[1]) * parseFloat(m[3]);
+  m = name.match(/(\d+(\.\d+)?)\s*b(?![a-z])/); // 7b, 70b, 1.5b
+  if (m) return parseFloat(m[1]);
+  m = name.match(/(\d+(\.\d+)?)\s*m(?![a-z])/); // 350m
+  if (m) return parseFloat(m[1]) / 1000;
+  return null;
+}
+
+function fmtDate(d) {
+  const dt = new Date(d);
+  if (isNaN(dt)) return "-";
+  return dt.toISOString().slice(0, 10);
+}
+
+async function fetchWithTimeout(url, ms = 8000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const res = await fetch(url, { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    return await res.json();
+  } catch (e) {
+    clearTimeout(t);
+    throw e;
+  }
+}
+
+// ---------------------------------------------------------------
+// 3. 实时拉取 Hugging Face 热门模型列表
+//    优先级：models-json（网站内部接口，字段最全）→ /api/models（官方 API，
+//    带 CORS，expand[]=safetensors 可拿到精确参数量）
+// ---------------------------------------------------------------
+const INFERENCE_PROVIDERS = [
+  "groq","novita","cerebras","nscale","fal-ai","together","fireworks-ai",
+  "featherless-ai","zai-org","replicate","cohere","scaleway","publicai",
+  "ovhcloud","deepinfra","wavespeed","hf-inference",
+];
+
+function normalizeModel(m) {
+  // safetensors.total 是 HF 计算的精确参数个数；models-json 里字段可能叫 numParameters
+  const exactRaw = m.safetensors?.total ?? m.numParameters ?? null;
+  const exact = exactRaw ? exactRaw / 1e9 : null;
+  const guessed = parseParamsFromName(m.id);
+  const params = exact ?? guessed;
+  const date = m.createdAt || m.lastModified;
+  if (!params || !date) return null;
+  return {
+    name: m.id,
+    date,
+    params: Math.round(params * 100) / 100,
+    exact: exact != null,
+    id: m.id,
+    likes: m.likes || 0,
+    downloads: m.downloads || 0,
+    task: m.pipeline_tag || "(未标注)",
+  };
+}
+
+async function fetchViaModelsJson(tag, sort, limit, providerOnly) {
+  const p = new URLSearchParams();
+  if (providerOnly) p.set("inference_provider", INFERENCE_PROVIDERS.join(","));
+  if (tag) p.set("pipeline_tag", tag);
+  p.set("sort", sort === "trendingScore" ? "trending" : sort);
+  p.set("limit", limit);
+  p.set("withCount", "false");
+  const data = await fetchWithTimeout(`https://huggingface.co/models-json?${p}`);
+  const list = Array.isArray(data) ? data : data.models || [];
+  return list.map(normalizeModel).filter(Boolean);
+}
+
+async function fetchViaOfficialApi(tag, sort, limit, providerOnly) {
+  const p = new URLSearchParams();
+  if (providerOnly) p.set("inference_provider", INFERENCE_PROVIDERS.join(","));
+  if (tag) p.set("pipeline_tag", tag);
+  p.set("sort", sort);
+  p.set("direction", "-1");
+  p.set("limit", limit);
+  for (const f of ["safetensors", "createdAt", "likes", "downloads", "pipeline_tag"]) {
+    p.append("expand[]", f);
+  }
+  const list = await fetchWithTimeout(`https://huggingface.co/api/models?${p}`);
+  return list.map(normalizeModel).filter(Boolean);
+}
+
+async function fetchLiveModels(tag, sort, limit, providerOnly) {
+  try {
+    const r = await fetchViaModelsJson(tag, sort, limit, providerOnly);
+    if (r.length) return { models: r, source: "models-json" };
+    throw new Error("models-json 返回为空");
+  } catch (e) {
+    const r = await fetchViaOfficialApi(tag, sort, limit, providerOnly);
+    return { models: r, source: "/api/models" };
+  }
+}
+
+// ---------------------------------------------------------------
+// 3.4 作者发现：不再依赖写死列表，三个来源动态汇入候选 datalist ——
+//   (1) HF quicksearch 接口：输入时实时联想组织/用户（与官网搜索框同源）
+//   (2) 已拉取响应中的 author 字段（如热门模型列表里出现过的作者）
+//   (3) localStorage 历史：成功加载过的作者永久记住
+// ---------------------------------------------------------------
+const AUTHOR_HISTORY_KEY = "hf_timeline_author_history";
+const knownAuthors = new Set();
+
+function loadAuthorHistory() {
+  try {
+    for (const a of JSON.parse(localStorage.getItem(AUTHOR_HISTORY_KEY) || "[]")) knownAuthors.add(a);
+  } catch (_) {}
+}
+
+function saveAuthorHistory(authors) {
+  for (const a of authors) knownAuthors.add(a);
+  try {
+    const prev = JSON.parse(localStorage.getItem(AUTHOR_HISTORY_KEY) || "[]");
+    const merged = [...new Set([...authors, ...prev])].slice(0, 100);
+    localStorage.setItem(AUTHOR_HISTORY_KEY, JSON.stringify(merged));
+  } catch (_) {}
+}
+
+function refreshAuthorDatalist(extra = []) {
+  for (const a of extra) knownAuthors.add(a);
+  document.getElementById("authorSuggest").innerHTML =
+    [...knownAuthors].sort().map(a => `<option value="${a}">`).join("");
+}
+
+// ---------------------------------------------------------------
+// 3.4.1 本地持久化存储
+//   - IndexedDB：缓存每个作者的全量模型数据（体积大），再次打开秒出缓存，
+//     后台重新拉取刷新（stale-while-revalidate）
+//   - localStorage：作者索引（纯名字列表，体积小）
+// ---------------------------------------------------------------
+const IDB_NAME = "hf_stat";
+const IDB_STORE = "cache";
+
+function idbOpen() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = () => req.result.createObjectStore(IDB_STORE);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbGet(key) {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const req = db.transaction(IDB_STORE).objectStore(IDB_STORE).get(key);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbSet(key, val) {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, "readwrite");
+    tx.objectStore(IDB_STORE).put(val, key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+// 作者索引：扫描模型库收集作者名，持久化到 localStorage
+const AUTHOR_INDEX_KEY = "hf_author_index";
+
+function loadAuthorIndex() {
+  try {
+    for (const a of JSON.parse(localStorage.getItem(AUTHOR_INDEX_KEY) || "[]")) knownAuthors.add(a);
+  } catch (_) {}
+  updateAuthorIndexInfo();
+}
+
+function saveAuthorIndex() {
+  try {
+    localStorage.setItem(AUTHOR_INDEX_KEY, JSON.stringify([...knownAuthors]));
+  } catch (_) {}
+  updateAuthorIndexInfo();
+}
+
+function updateAuthorIndexInfo() {
+  document.getElementById("authorIndexInfo").textContent = `本地索引：${knownAuthors.size} 个作者`;
+}
+
+async function buildAuthorIndex() {
+  const btn = document.getElementById("authorIndexBtn");
+  btn.disabled = true;
+  const MAX_INDEX_PAGES = 10; // 10 页 x 1000 条，扫描下载量最高的 1 万个模型
+  try {
+    let url = "https://huggingface.co/api/models?sort=downloads&direction=-1&limit=1000";
+    let pages = 0;
+    const before = knownAuthors.size;
+    while (url && pages < MAX_INDEX_PAGES) {
+      const res = await fetchPageWithRetry(url);
+      const list = await res.json();
+      for (const m of list) knownAuthors.add(m.id.split("/")[0]);
+      pages++;
+      setAuthorStatus(`构建作者索引中... 已扫描 ${pages}/${MAX_INDEX_PAGES} 页，索引 ${knownAuthors.size} 个作者`);
+      url = parseNextLink(res.headers.get("Link"));
+    }
+    saveAuthorIndex();
+    refreshAuthorDatalist();
+    setAuthorStatus(`✅ 作者索引构建完成：新增 ${knownAuthors.size - before} 个，共 ${knownAuthors.size} 个作者已持久化到本地，下次打开直接可用。`);
+  } catch (e) {
+    setAuthorStatus("⚠️ 索引构建失败：" + e.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+document.getElementById("authorIndexBtn").addEventListener("click", buildAuthorIndex);
+
+// 输入联想：HF quicksearch（防抖 300ms，失败静默降级为本地候选）
+let quicksearchTimer = null;
+document.getElementById("authorInput").addEventListener("input", (e) => {
+  const q = e.target.value.split(",").pop().trim();
+  clearTimeout(quicksearchTimer);
+  if (q.length < 2) return;
+  quicksearchTimer = setTimeout(async () => {
+    try {
+      const data = await fetchWithTimeout(
+        `https://huggingface.co/api/quicksearch?q=${encodeURIComponent(q)}`, 5000);
+      const names = [
+        ...(data.orgs || []).map(o => o.name),
+        ...(data.users || []).map(u => u.user || u.name),
+      ].filter(Boolean);
+      refreshAuthorDatalist(names);
+    } catch (_) { /* 联想失败不影响手动输入 */ }
+  }, 300);
+});
+
+// ---------------------------------------------------------------
+// 3.5 按作者拉取模型（支持通过 Link 响应头自动翻页，拉取全量数据）
+// ---------------------------------------------------------------
+const MAX_TOTAL_MODELS = 5000; // 安全上限，防止超大组织拉爆浏览器
+
+function parseNextLink(linkHeader) {
+  if (!linkHeader) return null;
+  const m = linkHeader.match(/<([^>]+)>;\s*rel="next"/);
+  return m ? m[1] : null;
+}
+
+async function fetchPageWithRetry(url, maxRetries = 3) {
+  for (let attempt = 0; ; attempt++) {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 15000);
+    let res;
+    try {
+      res = await fetch(url, { signal: ctrl.signal });
+    } finally {
+      clearTimeout(t);
+    }
+    if (res.status === 429 && attempt < maxRetries) {
+      // 被限流：按 Retry-After 或指数退避后重试
+      const wait = (parseInt(res.headers.get("Retry-After")) || 2 ** attempt) * 1000;
+      await new Promise(r => setTimeout(r, wait));
+      continue;
+    }
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    return res;
+  }
+}
+
+// 逐页拉取：继续条件完全由服务器响应头驱动 ——
+//   Link: <下一页URL>; rel="next"  → 还有下一页，继续请求；没有则结束
+//   X-Total-Count: N               → 服务器告知的最终总数，用于进度和完整性校验
+// 不依赖“本页条数 == 请求的 limit”这种脆弱判断。
+async function fetchAllPages(firstUrl, onProgress) {
+  const all = [];
+  let url = firstUrl;
+  let reportedTotal = null;
+  let pages = 0;
+  while (url && all.length < MAX_TOTAL_MODELS) {
+    const res = await fetchPageWithRetry(url);
+    if (reportedTotal == null) {
+      const tc = res.headers.get("X-Total-Count");
+      if (tc != null && !isNaN(+tc)) reportedTotal = +tc;
+    }
+    const page = await res.json();
+    all.push(...page);
+    pages++;
+    if (onProgress) onProgress(all.length, reportedTotal);
+    url = parseNextLink(res.headers.get("Link"));
+  }
+  return {
+    items: all,
+    reportedTotal,
+    pages,
+    truncated: !!url, // 仍有 next 但碰到了本地安全上限
+    complete: !url && (reportedTotal == null || all.length >= reportedTotal),
+  };
+}
+
+async function fetchAuthorModels(author, limit, onProgress) {
+  const p = new URLSearchParams();
+  p.set("author", author);
+  p.set("sort", "likes");
+  p.set("direction", "-1");
+  p.set("limit", limit === "all" ? "1000" : limit); // 仅是页大小建议值，是否继续由 Link 头决定
+  for (const f of ["safetensors", "createdAt", "likes", "downloads", "pipeline_tag"]) {
+    p.append("expand[]", f);
+  }
+  const url = `https://huggingface.co/api/models?${p}`;
+  if (limit === "all") {
+    const r = await fetchAllPages(url, onProgress);
+    return {
+      models: r.items.map(normalizeModel).filter(Boolean),
+      rawCount: r.items.length,
+      reportedTotal: r.reportedTotal,
+      pages: r.pages,
+      truncated: r.truncated,
+      complete: r.complete,
+    };
+  }
+  const res = await fetchPageWithRetry(url);
+  const tc = res.headers.get("X-Total-Count");
+  const list = await res.json();
+  return {
+    models: list.map(normalizeModel).filter(Boolean),
+    rawCount: list.length,
+    reportedTotal: tc != null && !isNaN(+tc) ? +tc : null,
+    pages: 1,
+    truncated: false,
+    complete: false,
+  };
+}
+
+// ---------------------------------------------------------------
+// 4. 渲染
+// ---------------------------------------------------------------
+let chart;
+let authorChartObj;
+let liveData = [];
+
+const AUTHOR_COLORS = ["#ff9d00", "#4dd0e1", "#ab7df6", "#7ce38b", "#ff7597", "#ffd166", "#6ea8fe"];
+
+function baseScatterOptions(getChart) {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    scales: {
+      x: {
+        type: "time",
+        time: { unit: "year" },
+        title: { display: true, text: "发布 / 上线时间", color: "#9aa0b4" },
+        ticks: { color: "#9aa0b4" },
+        grid: { color: "#2a2d3a" },
+      },
+      y: {
+        type: "logarithmic",
+        title: { display: true, text: "参数量 (Billion, 对数轴)", color: "#9aa0b4" },
+        ticks: { color: "#9aa0b4" },
+        grid: { color: "#2a2d3a" },
+      },
+    },
+    plugins: {
+      legend: { labels: { color: "#e6e8ef" } },
+      tooltip: {
+        callbacks: {
+          label: (ctx) => {
+            const m = ctx.raw.meta;
+            const src = m.exact === false ? "（名称估算）" : "";
+            const extra = m.likes != null ? ` · ❤${m.likes} · ⬇${m.downloads}` : "";
+            return `${m.name} · ${m.params}B${src} · ${fmtDate(m.date)}${extra}`;
+          },
+        },
+      },
+    },
+    onClick: (evt, elements) => {
+      if (!elements.length) return;
+      const c = getChart();
+      const ds = c.data.datasets[elements[0].datasetIndex];
+      const point = ds.data[elements[0].index];
+      window.open(`https://huggingface.co/${point.meta.id}`, "_blank");
+    },
+  };
+}
+
+function setAuthorStatus(text, isError) {
+  const el = document.getElementById("authorStatus");
+  el.textContent = text;
+  el.style.background = isError ? "#3a2323" : "#24314a";
+  el.style.color = isError ? "#ff8686" : "var(--accent2)";
+}
+
+// ---------------------------------------------------------------
+// 4.4 Tasks 筛选（选项由响应中的 pipeline_tag 动态生成，纯前端过滤不重新请求）
+// ---------------------------------------------------------------
+let authorCache = { authors: [], results: [] }; // 最近一次拉取的原始结果
+
+function populateTaskFilter() {
+  const counts = new Map();
+  for (const r of authorCache.results) {
+    for (const m of r.models) counts.set(m.task, (counts.get(m.task) || 0) + 1);
+  }
+  const sel = document.getElementById("authorTaskFilter");
+  const options = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([task, n]) => `<option value="${task}">${task} (${n})</option>`);
+  sel.innerHTML = `<option value="">全部任务 (${[...counts.values()].reduce((s, n) => s + n, 0)})</option>` + options.join("");
+  sel.disabled = counts.size === 0;
+}
+
+function currentTaskFilter() {
+  return document.getElementById("authorTaskFilter").value;
+}
+
+function filteredAuthorResults() {
+  const task = currentTaskFilter();
+  return authorCache.results.map(r => ({
+    ...r,
+    models: task ? r.models.filter(m => m.task === task) : r.models,
+  }));
+}
+
+// 基于缓存 + 当前 Tasks 筛选重绘图表与列表（不发起网络请求）
+function applyAuthorFilters() {
+  const { authors } = authorCache;
+  if (!authors.length) return;
+  const results = filteredAuthorResults();
+  const datasets = results.map((r, i) => ({
+    label: `${authors[i]} (${r.models.length})`,
+    data: r.models.map(m => ({ x: new Date(m.date), y: m.params, meta: m })),
+    backgroundColor: AUTHOR_COLORS[i] + "cc",
+    borderColor: AUTHOR_COLORS[i],
+    pointRadius: 5,
+    pointHoverRadius: 7,
+  }));
+  if (authorChartObj) authorChartObj.destroy();
+  authorChartObj = new Chart(document.getElementById("authorChart").getContext("2d"), {
+    type: "scatter",
+    data: { datasets },
+    options: baseScatterOptions(() => authorChartObj),
+  });
+  authorRows = results.flatMap((r, i) => r.models.map(m => ({ ...m, author: authors[i] })));
+  document.getElementById("authorTableBtn").disabled = authorRows.length === 0;
+  if (document.getElementById("authorModal").classList.contains("open")) {
+    document.getElementById("authorModalTitle").textContent =
+      `作者模型完整列表（共 ${authorRows.length} 个，点击表头排序）`;
+    renderAuthorTable();
+  }
+}
+
+document.getElementById("authorTaskFilter").addEventListener("change", applyAuthorFilters);
+
+// ---------------------------------------------------------------
+// 4.5 作者模型完整列表弹窗（可排序，默认按时间降序）
+// ---------------------------------------------------------------
+let authorRows = []; // 当前筛选下的全部作者模型（含 author 字段）
+let authorSort = { key: "date", dir: -1 };
+
+function renderAuthorTable() {
+  const { key, dir } = authorSort;
+  const rows = [...authorRows].sort((a, b) => {
+    let va = a[key], vb = b[key];
+    if (key === "date") { va = new Date(va).getTime(); vb = new Date(vb).getTime(); }
+    if (typeof va === "string") return va.localeCompare(vb) * dir;
+    return ((va ?? 0) - (vb ?? 0)) * dir;
+  });
+  document.querySelector("#authorTable tbody").innerHTML = rows.map(m => `
+    <tr>
+      <td>${m.name}</td>
+      <td>${m.author}</td>
+      <td>${fmtDate(m.date)}</td>
+      <td>${m.task}</td>
+      <td>${m.params}</td>
+      <td>${m.exact ? "safetensors 精确" : "名称估算"}</td>
+      <td>${m.likes ?? "-"}</td>
+      <td>${m.downloads ?? "-"}</td>
+      <td><a href="https://huggingface.co/${m.id}" target="_blank">查看</a></td>
+    </tr>
+  `).join("");
+  // 标记当前排序列及方向
+  document.querySelectorAll("#authorTable th[data-sort]").forEach(th => {
+    const active = th.dataset.sort === key;
+    th.classList.toggle("sorted", active);
+    th.textContent = th.textContent.replace(/ [↑↓⇅]$/, "") + (active ? (dir === 1 ? " ↑" : " ↓") : " ⇅");
+  });
+}
+
+function openAuthorModal() {
+  document.getElementById("authorModalTitle").textContent =
+    `作者模型完整列表（共 ${authorRows.length} 个，点击表头排序）`;
+  renderAuthorTable();
+  document.getElementById("authorModal").classList.add("open");
+}
+
+document.getElementById("authorTableBtn").addEventListener("click", openAuthorModal);
+document.getElementById("authorModalClose").addEventListener("click", () =>
+  document.getElementById("authorModal").classList.remove("open"));
+document.getElementById("authorModal").addEventListener("click", (e) => {
+  if (e.target.id === "authorModal") e.target.classList.remove("open");
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") document.getElementById("authorModal").classList.remove("open");
+});
+document.querySelectorAll("#authorTable th[data-sort]").forEach(th => {
+  th.addEventListener("click", () => {
+    const k = th.dataset.sort;
+    if (authorSort.key === k) authorSort.dir *= -1;
+    else authorSort = { key: k, dir: k === "date" ? -1 : -1 };
+    renderAuthorTable();
+  });
+});
+
+// 把结果应用到图表/筛选/列表（缓存命中和网络返回都走这里）
+function applyAuthorResults(authors, results, limit, statusOverride) {
+  authorCache = { authors, results };
+  saveAuthorHistory(authors.filter((a, i) => results[i].rawCount > 0));
+  refreshAuthorDatalist();
+  document.getElementById("authorTaskFilter").value = "";
+  populateTaskFilter();
+  applyAuthorFilters();
+  if (statusOverride) { setAuthorStatus(statusOverride); return; }
+  const total = results.reduce((s, r) => s + r.models.length, 0);
+  const details = results.map((r, i) => {
+    const totalStr = r.reportedTotal != null ? `/总共${r.reportedTotal}` : "";
+    let flag = "";
+    if (limit === "all") {
+      if (r.truncated) flag = "，⚠️超过本地上限已截断";
+      else if (r.reportedTotal != null && r.rawCount < r.reportedTotal) flag = "，⚠️与服务器总数不符";
+      else flag = "，已确认全量";
+    }
+    return `${authors[i]}: 拉取${r.rawCount}${totalStr}（${r.pages}页），可绘制${r.models.length}${flag}`;
+  }).join("；");
+  setAuthorStatus(`✅ 共绘制 ${total} 个模型 — ${details}（拉取时间 ${new Date().toLocaleString()}）`);
+}
+
+let authorLoadSeq = 0; // 防止旧的后台刷新覆盖新选择
+
+async function loadAuthorChart() {
+  const custom = document.getElementById("authorInput").value.trim();
+  const authors = (custom || document.getElementById("authorSelect").value)
+    .split(",").map(s => s.trim()).filter(Boolean).slice(0, AUTHOR_COLORS.length);
+  const limit = document.getElementById("authorLimit").value;
+  if (!authors.length) return;
+  const seq = ++authorLoadSeq;
+  const cacheKey = `authorData:${authors.join(",")}|${limit}`;
+
+  // 1) 缓存命中则立即展示，后台继续拉最新数据（stale-while-revalidate）
+  let hasCache = false;
+  try {
+    const cached = await idbGet(cacheKey);
+    if (cached && seq === authorLoadSeq) {
+      hasCache = true;
+      applyAuthorResults(cached.authors, cached.results, limit,
+        `💾 已展示本地缓存（存于 ${new Date(cached.ts).toLocaleString()}），后台正在拉取最新数据...`);
+    }
+  } catch (_) {}
+  if (!hasCache) setAuthorStatus(`正在拉取 ${authors.join(", ")} 的模型...`);
+
+  // 2) 拉取最新数据，完成后刷新展示并回写缓存
+  try {
+    const progress = {};
+    const onProgress = (a) => (n, total) => {
+      if (seq !== authorLoadSeq) return;
+      progress[a] = total != null ? `${n}/${total}` : `${n}/?`;
+      const txt = Object.entries(progress).map(([k, v]) => `${k}: ${v}`).join("，");
+      const prefix = hasCache ? "（缓存已展示）后台更新中" : "正在翻页拉取全量数据";
+      setAuthorStatus(`${prefix}... ${txt}`);
+    };
+    const results = await Promise.all(authors.map(a => fetchAuthorModels(a, limit, onProgress(a))));
+    if (seq !== authorLoadSeq) return; // 期间用户已切换到其它作者，丢弃
+    idbSet(cacheKey, { authors, results, ts: Date.now() }).catch(() => {});
+    applyAuthorResults(authors, results, limit);
+  } catch (e) {
+    if (seq !== authorLoadSeq) return;
+    if (hasCache) {
+      setAuthorStatus("⚠️ 后台更新失败，当前展示的是本地缓存数据。错误：" + e.message, true);
+    } else {
+      setAuthorStatus("⚠️ 拉取失败：" + e.message, true);
+    }
+  }
+}
+
+function buildDatasets() {
+  const showCurated = document.getElementById("toggleCurated").checked;
+  const showLive = document.getElementById("toggleLive").checked;
+  const datasets = [];
+  if (showCurated) {
+    datasets.push({
+      label: "里程碑模型",
+      data: CURATED.map(m => ({ x: new Date(m.date), y: m.params, meta: m })),
+      backgroundColor: "#ff9d00",
+      borderColor: "#ff9d00",
+      pointRadius: 6,
+      pointHoverRadius: 8,
+    });
+  }
+  if (showLive) {
+    datasets.push({
+      label: "实时热门模型 (HF API)",
+      data: liveData.map(m => ({ x: new Date(m.date), y: m.params, meta: m })),
+      backgroundColor: "rgba(77,208,225,0.55)",
+      borderColor: "#4dd0e1",
+      pointRadius: 4,
+      pointHoverRadius: 6,
+    });
+  }
+  return datasets;
+}
+
+function renderChart() {
+  const ctx = document.getElementById("chart").getContext("2d");
+  const datasets = buildDatasets();
+  if (chart) { chart.destroy(); }
+  chart = new Chart(ctx, {
+    type: "scatter",
+    data: { datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: {
+          type: "time",
+          time: { unit: "year" },
+          title: { display: true, text: "发布 / 上线时间", color: "#9aa0b4" },
+          ticks: { color: "#9aa0b4" },
+          grid: { color: "#2a2d3a" },
+        },
+        y: {
+          type: "logarithmic",
+          title: { display: true, text: "参数量 (Billion, 对数轴)", color: "#9aa0b4" },
+          ticks: { color: "#9aa0b4" },
+          grid: { color: "#2a2d3a" },
+        },
+      },
+      plugins: {
+        legend: { labels: { color: "#e6e8ef" } },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const m = ctx.raw.meta;
+              const src = m.exact === false ? "（名称估算）" : "";
+              const extra = m.likes != null ? ` · ❤${m.likes} · ⬇${m.downloads}` : "";
+              return `${m.name} · ${m.params}B${src} · ${fmtDate(m.date)}${extra}`;
+            },
+          },
+        },
+      },
+      onClick: (evt, elements) => {
+        if (!elements.length) return;
+        const ds = chart.data.datasets[elements[0].datasetIndex];
+        const point = ds.data[elements[0].index];
+        window.open(`https://huggingface.co/${point.meta.id}`, "_blank");
+      },
+    },
+  });
+}
+
+function renderTable() {
+  const rows = [
+    ...CURATED.map(m => ({ ...m, type: "里程碑" })),
+    ...liveData.map(m => ({ ...m, type: "实时热门" })),
+  ].sort((a, b) => new Date(a.date) - new Date(b.date));
+
+  const tbody = document.querySelector("#dataTable tbody");
+  tbody.innerHTML = rows.map(m => `
+    <tr>
+      <td>${m.name}</td>
+      <td>${fmtDate(m.date)}</td>
+      <td>${m.params}</td>
+      <td>${m.type === "里程碑" ? "人工整理" : (m.exact ? "safetensors 精确" : "名称估算")}</td>
+      <td>${m.likes ?? "-"}</td>
+      <td>${m.downloads ?? "-"}</td>
+      <td>${m.type}</td>
+      <td><a href="https://huggingface.co/${m.id}" target="_blank">查看</a></td>
+    </tr>
+  `).join("");
+}
+
+function setStatus(text, isError) {
+  const el = document.getElementById("status");
+  el.textContent = text;
+  el.classList.toggle("error", !!isError);
+}
+
+async function loadAll() {
+  const bar = document.getElementById("loadingBar");
+  bar.style.width = "20%";
+  const tag = document.getElementById("liveTag").value;
+  const sort = document.getElementById("liveSort").value;
+  const limit = document.getElementById("liveLimit").value;
+  const providerOnly = document.getElementById("providerOnly").checked;
+  setStatus("正在从 Hugging Face API 拉取最新热门模型...");
+  try {
+    const { models, source } = await fetchLiveModels(tag, sort, limit, providerOnly);
+    liveData = models;
+    // 从响应中收集作者，汇入作者搜索候选
+    refreshAuthorDatalist(liveData.map(m => m.id.split("/")[0]));
+    bar.style.width = "80%";
+    const exactCount = liveData.filter(m => m.exact).length;
+    setStatus(`✅ 已通过 ${source} 实时获取 ${liveData.length} 个模型（其中 ${exactCount} 个为 safetensors 精确参数量，拉取时间 ${new Date().toLocaleString()}），叠加 ${CURATED.length} 个里程碑模型。`);
+  } catch (e) {
+    liveData = [];
+    setStatus("⚠️ 无法连接 Hugging Face API（可能是网络/CORS 限制），仅显示里程碑模型数据。错误：" + e.message, true);
+  }
+  bar.style.width = "100%";
+  setTimeout(() => (bar.style.width = "0%"), 500);
+  renderChart();
+  renderTable();
+}
+
+document.getElementById("refreshBtn").addEventListener("click", loadAll);
+document.getElementById("liveTag").addEventListener("change", loadAll);
+document.getElementById("liveSort").addEventListener("change", loadAll);
+document.getElementById("liveLimit").addEventListener("change", loadAll);
+document.getElementById("providerOnly").addEventListener("change", loadAll);
+document.getElementById("toggleCurated").addEventListener("change", renderChart);
+document.getElementById("toggleLive").addEventListener("change", renderChart);
+document.getElementById("authorLoadBtn").addEventListener("click", loadAuthorChart);
+document.getElementById("authorSelect").addEventListener("change", () => {
+  document.getElementById("authorInput").value = "";
+  loadAuthorChart();
+});
+document.getElementById("authorInput").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") loadAuthorChart();
+});
+
+// 表格排序
+document.querySelectorAll("#dataTable th[data-key]").forEach(th => {
+  th.addEventListener("click", () => {
+    // simple client resort not critical; re-render sorted by date always covers main use case
+  });
+});
+
+loadAuthorHistory();
+loadAuthorIndex();
+refreshAuthorDatalist([...document.getElementById("authorSelect").options].map(o => o.value));
+loadAll();
+loadAuthorChart();
+</script>
+</body>
+</html>
